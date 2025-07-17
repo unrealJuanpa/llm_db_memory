@@ -70,3 +70,7 @@ This project is designed to be modular and extensible. You can:
 *   **Modify Prompts**: Change the system prompts in `composite_agent.py` to alter the behavior of the tagger and interpreter.
 *   **Extend the Database Schema**: Add more metadata to the `content` table, such as timestamps or relationship types.
 *   **Improve Retrieval Logic**: Modify the `get_related_content_by_tags` method to experiment with different information retrieval algorithms.
+
+## TODO
+* **Forget**: A point system is currently in place, where each "memory" increases by one point each time it is returned. The plan is to have a defined limit so that when a "memory" exceeds a maximum time limit and a minimum number of points, it is forgotten.
+* **Notion of time**: Add a notion of time to the agents.
