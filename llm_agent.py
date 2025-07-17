@@ -18,10 +18,15 @@ class LLMAgent:
                 {"role": "user",     "content": system_prompt},
                 {"role": "assistant","content": "ok"}
             ]
+    
+    def clear_think(self, text):
+        if '</think>' in text:
+            text = text.split('</think>')[1]
+        return text.strip()
 
-    def chat(self, user_input: str) -> str:
+    def chat(self, user_input: str, temporal_input: str = "") -> str:
         # Append user message
-        self.history.append({"role": "user", "content": user_input})
+        self.history.append({"role": "user", "content": user_input + "\n\n" + temporal_input})
 
         # Trim history to respect max_interactions
         sys_part = self.history[:2] if len(self.history) > 1 else []
@@ -40,7 +45,7 @@ class LLMAgent:
 
         full_reply_content = ""
         # Imprimir la marca de tiempo al inicio del stream
-        print(f"\n[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] ", end="")
+        print(f"\n[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n", end="")
 
         for chunk in resp.iter_content(chunk_size=None):
             if chunk:
@@ -63,6 +68,9 @@ class LLMAgent:
 
         print() # Nueva línea al final de la respuesta
 
+        full_reply_content = self.clear_think(full_reply_content)
+
         # Append assistant response
+        self.history[-1] = {"role": "user", "content": user_input}
         self.history.append({"role": "assistant", "content": full_reply_content})
         return full_reply_content

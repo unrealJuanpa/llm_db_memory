@@ -3,13 +3,14 @@ from llm_agent import LLMAgent
 
 def main():
     agent = CompositeAgent(
-        name="my_agent",
+        agent_name="my_agent",
         server_ip="http://192.168.40.14:11434",
-        model="deepseek-r1:latest",
+        expert_model="deepseek-r1:latest",
+        tagger_model="gemma3:latest",
+        interpreter_model="gemma3:latest",
         system_prompt="You are a helpful assistant.",
-        max_interactions=16,
-        retrieval_limit=16,
-        debug_print=True
+        short_term_items=16,
+        long_term_top_results=6
     )
 
     print("Type 'exit' to quit.")
