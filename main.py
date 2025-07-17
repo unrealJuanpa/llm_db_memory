@@ -20,6 +20,7 @@ def main():
             break
         response = agent.chat(user_input)
         print("Agent:", response)
+        print()
 
 if __name__ == "__main__":
     main()
