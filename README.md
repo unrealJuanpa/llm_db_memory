@@ -74,3 +74,16 @@ This project is designed to be modular and extensible. You can:
 ## TODO
 * **Forget**: A point system is currently in place, where each "memory" increases by one point each time it is returned. The plan is to have a defined limit so that when a "memory" exceeds a maximum time limit and a minimum number of points, it is forgotten.
 * **Notion of time**: Add a notion of time to the agents.
+
+* New Version
+dos agentes
+- tagger: recibe las tags actuales del contexto + un mensaje a la vez y actualiza las tags de contexto
+- expert: recibe las interacciones del contexto y genera una respuesta
+
+Flujo de informacion:
+1) se recibe el mensaje del usuario
+2) se le pasan las tags de contexto + el mensaje del usuario y el agente actualiza las tags
+3) se consultan en la bd las tags pertinentes y se devuelven las interacciones con fecha (nombre del mes, numero del dia y el dia en palabras) y hora
+4) se le pasan las interacciones de contexto al experto junto con el mensaje del usuario y se genera la respuesta
+5) el tagger toma las tags de contexto + la respuesta del agente y genera nuevas tags
+6) nuevo ciclo iniciado

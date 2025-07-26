@@ -1,5 +1,5 @@
 import sqlite3
-import datetime # Se mantiene porque LLMAgent usa datetime para su timestamp de impresión
+from datetime import datetime # Se mantiene porque LLMAgent usa datetime para su timestamp de impresión
 from typing import List, Optional, Tuple
 from llm_agent import LLMAgent # Asumo que llm_agent.py está en el mismo directorio
 
@@ -12,8 +12,9 @@ class CompositeAgent:
             tagger_model: str = "deepseek-r1:latest",
             interpreter_model: str = "deepseek-r1:latest",
             system_prompt: str = "You are a helpful assistant",
-            short_term_items: int = 16,
-            long_term_top_results: int = 5
+            max_context_tags: int = 12,
+            short_term_memory_items: int = 8,
+            long_term_top_results: int = 8
         ):
         self.agent_name = agent_name
         self.db_name = f"{agent_name}_db.sqlite"
@@ -22,9 +23,11 @@ class CompositeAgent:
         print('[DB LOG] Checking DB schema...')
         self._check_and_create_schema()
 
-        self.expert_agent = LLMAgent(server_ip=server_ip, model=expert_model, system_prompt=system_prompt, max_interactions=short_term_items)
-        self.tagger_agent = LLMAgent(server_ip=server_ip, model=tagger_model, system_prompt="You are an AI agent that takes the content given by the user and converts it into tags that represent the information presented. Tags are simple strings separated by a comma ','. Tags arent sentences, tags are simple words or composed words. Do not give greetings, explanations or anything else other than the plain text list of tags. Generate a short but expressive set of tags that represent the information. No JSON, no Markdown, no YAML format, just plain text.", max_interactions=1)
-        self.interpreter_agent = LLMAgent(server_ip=server_ip, model=interpreter_model, system_prompt="You are an AI agent that aims to take the information presented by the user and give a short but concise, integrated and clear synthesis of the given information.", max_interactions=1)
+        self.expert_agent = LLMAgent(server_ip=server_ip, model=expert_model, system_prompt=system_prompt, max_interactions=short_term_memory_items)
+        self.tagger_agent = LLMAgent(server_ip=server_ip, model=tagger_model, system_prompt=f'You are an AI agent that extracts keywords representing the provided text and combines them with the provided keywords to produce a single list of maximum {max_context_tags} keywords representing both sets. If there are more keywords, prioritize or join the concepts of the most important ones to meet the planned amount.. The resulting keywords are returned separated by "," as plain text, not JSON, not XML.', max_interactions=1)
+        # self.interpreter_agent = LLMAgent(server_ip=server_ip, model=interpreter_model, system_prompt="You are an AI agent that aims to take the information presented by the user and give a short but concise, integrated and clear synthesis of the given information.", max_interactions=1)
+        self.context_tags = []
+
 
     def _get_db_connection(self):
         conn = sqlite3.connect(self.db_name)
@@ -39,7 +42,8 @@ class CompositeAgent:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tags (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tag_text TEXT UNIQUE NOT NULL
+                    tag_text TEXT UNIQUE NOT NULL,
+                    timestamp_created TEXT NOT NULL DEFAULT (datetime('now'))
                 )
             """)
 
@@ -47,7 +51,8 @@ class CompositeAgent:
                 CREATE TABLE IF NOT EXISTS content (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     content_text TEXT NOT NULL,
-                    points INTEGER DEFAULT 0
+                    points INTEGER DEFAULT 0,
+                    timestamp_created TEXT NOT NULL DEFAULT (datetime('now'))
                 )
             """)
 
@@ -60,6 +65,18 @@ class CompositeAgent:
                     FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
                 )
             """)
+            
+            # Agregar columnas timestamp si no existen (para bases de datos existentes)
+            try:
+                cursor.execute("ALTER TABLE tags ADD COLUMN timestamp_created TEXT DEFAULT (datetime('now'))")
+            except sqlite3.OperationalError:
+                pass  # La columna ya existe
+                
+            try:
+                cursor.execute("ALTER TABLE content ADD COLUMN timestamp_created TEXT DEFAULT (datetime('now'))")
+            except sqlite3.OperationalError:
+                pass  # La columna ya existe
+            
             conn.commit()
             print(f"[DB LOG] Schema for '{self.db_name}' checked/created successfully.")
         except sqlite3.OperationalError as e:
@@ -73,14 +90,20 @@ class CompositeAgent:
         cursor = conn.cursor()
 
         try:
-            # No timestamp inserted here anymore
-            cursor.execute("INSERT INTO content (content_text) VALUES (?)", (text,))
+            current_timestamp = datetime.now().isoformat()
+            
+            # Insertar contenido con timestamp
+            cursor.execute(
+                "INSERT INTO content (content_text, timestamp_created) VALUES (?, ?)", 
+                (text, current_timestamp)
+            )
             content_id = cursor.lastrowid
 
             for tag_text in tags:
+                # Insertar tag con timestamp si no existe
                 cursor.execute(
-                    "INSERT OR IGNORE INTO tags (tag_text) VALUES (?)",
-                    (tag_text.lower(),)
+                    "INSERT OR IGNORE INTO tags (tag_text, timestamp_created) VALUES (?, ?)",
+                    (tag_text.lower(), current_timestamp)
                 )
                 cursor.execute(
                     "SELECT id FROM tags WHERE tag_text = ?",
@@ -93,7 +116,7 @@ class CompositeAgent:
                     (content_id, tag_id)
                 )
             conn.commit()
-            print(f"[DB LOG] Content saved with ID {content_id} and tags: {', '.join(tags)}")
+            print(f"[DB LOG] Content saved with ID {content_id} and tags: {', '.join(tags)} at {current_timestamp}")
             return content_id
         except sqlite3.Error as e:
             print(f"[DB ERROR] Error saving content and tags: {e}")
@@ -102,7 +125,11 @@ class CompositeAgent:
         finally:
             conn.close()
 
-    def get_related_content_by_tags(self, search_tags: List[str]) -> List[Tuple[int, str, int, List[str]]]:
+    def get_related_content_by_tags(self, search_tags: List[str]) -> List[Tuple[int, str, int, List[str], str]]:
+        """
+        Retorna una lista de tuplas con:
+        (content_id, content_text, points, associated_tags, timestamp_created)
+        """
         if not search_tags:
             return []
 
@@ -113,12 +140,12 @@ class CompositeAgent:
         tag_placeholders = ','.join('?' * len(lower_search_tags))
 
         try:
-            # Removed `c.timestamp_created DESC` from ORDER BY
             query = f"""
                 SELECT
                     c.id,
                     c.content_text,
                     c.points,
+                    c.timestamp_created,
                     GROUP_CONCAT(t.tag_text) AS associated_tags,
                     COUNT(DISTINCT ct.tag_id) AS tag_match_count
                 FROM
@@ -130,9 +157,9 @@ class CompositeAgent:
                 WHERE
                     t.tag_text IN ({tag_placeholders})
                 GROUP BY
-                    c.id, c.content_text, c.points
+                    c.id, c.content_text, c.points, c.timestamp_created
                 ORDER BY
-                    tag_match_count DESC, c.points DESC
+                    tag_match_count DESC, c.points DESC, c.timestamp_created ASC
                 LIMIT ?
             """
             cursor.execute(query, lower_search_tags + [self.n_top_results])
@@ -145,9 +172,10 @@ class CompositeAgent:
                 content_id = row['id']
                 content_text = row['content_text']
                 points = row['points']
+                timestamp_created = row['timestamp_created']
                 associated_tags = row['associated_tags'].split(',') if row['associated_tags'] else []
 
-                final_results.append((content_id, content_text, points, associated_tags))
+                final_results.append((content_id, content_text, points, associated_tags, timestamp_created))
                 content_ids_to_update_points.append(content_id)
 
             if content_ids_to_update_points:
@@ -158,7 +186,7 @@ class CompositeAgent:
                     WHERE id IN ({update_placeholders})
                 """, content_ids_to_update_points)
                 conn.commit()
-                print(f"[DB LOG] Points incremented for content IDs: {content_ids_to_update_points}")
+                # print(f"[DB LOG] Points incremented for content IDs: {content_ids_to_update_points}")
 
             return final_results
 
@@ -169,43 +197,30 @@ class CompositeAgent:
             conn.close()
 
     def chat(self, prompt):
-        history_text = "This is a conversation between an user and an assistant:\n"
+        # print('[TAGGER AGENT OUTPUT FOR AGENT INPUT]')
+        self.context_tags = self.tagger_agent.chat(f"Existing keywords: {','.join(self.context_tags)}\n\nText to integrate: {prompt}")
+        self.context_tags = self.context_tags.split(',')
+        self.context_tags = [t.strip() for t in self.context_tags]
+        # print(self.context_tags)
+        self.save_content_with_tags(f"user said: {prompt}", ['user'] + self.context_tags)
 
-        for i in range(len(self.expert_agent.history)):
-            history_text = f"{history_text}\n{self.expert_agent.history[i]['role']} said: {self.expert_agent.history[i]['content']}"
 
-        history_text = f"{history_text}\nuser said: {prompt}"
+        # print("[QUERYING LONG TERM MEMORY]")
+        input_db_context = "\n\n".join([f"Created at: {c[-1]}\nContent: {c[1]}" for c in self.get_related_content_by_tags(self.context_tags)])
+        # print(input_db_context)
+        # print(input_db_context)
 
-        print('[TAGGER AGENT OUTPUT FOR CONTEXT]')
-        context_tags = self.tagger_agent.chat(history_text)
-        context_tags = context_tags.split(',')
-        context_tags = [t.strip() for t in context_tags]
+        # print("[EXPERT AGENT OUTPUT]")
+        expert_output = self.expert_agent.chat(prompt, temporal_input=f"Current date and time: {datetime.now()}\nCONTEXT FROM LONG TERM MEMORY: {input_db_context}")
+        
 
-        content_obj = "\n".join([c[1] for c in self.get_related_content_by_tags(context_tags)])
-        if len(content_obj) == 0:
-            content_obj = "No data to interpret yet."
+        # print('[TAGGER AGENT OUTPUT FOR AGENT RESPONSE]')
+        self.context_tags = self.tagger_agent.chat(f"Existing keywords: {','.join(self.context_tags)}\n\nText to integrate: {expert_output}")
+        self.context_tags = self.context_tags.split(',')
+        self.context_tags = [t.strip() for t in self.context_tags]
+        # print(self.context_tags)
+        self.save_content_with_tags(f"agent said: {expert_output}", ['agent', 'ai'] + self.context_tags)
 
-        print("[CONTENT RETRIEVED FROM LONG TERM MEMORY]")
-        print(content_obj)
-
-        print("[INTERPRETER AGENT OUTPUT]")
-        interpretation = self.interpreter_agent.chat(content_obj)
-
-        print("[EXPERT AGENT OUTPUT]")
-        expert_output = self.expert_agent.chat(prompt, temporal_input=f"CONTEXT FROM LONG TERM MEMORY: {interpretation}")
-
-        print('[TAGGER AGENT OUTPUT FOR PROMPT]')
-        prompt_tags = self.tagger_agent.chat(f"The following is what a user says: {prompt}")
-        prompt_tags = prompt_tags.split(',')
-        prompt_tags = [t.strip() for t in prompt_tags]
-
-        print('[TAGGER AGENT OUTPUT FOR RESPONSE]')
-        response_tags = self.tagger_agent.chat(f"The following is what an ai agent says: {expert_output}")
-        response_tags = response_tags.split(',')
-        response_tags = [t.strip() for t in response_tags]
-
-        self.save_content_with_tags(f"user said: {prompt}", ['user'] + prompt_tags + context_tags)
-        self.save_content_with_tags(f"agent said: {expert_output}", ['agent', 'ai'] + response_tags + context_tags)
         return expert_output
 
 
